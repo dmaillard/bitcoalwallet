@@ -99,7 +99,6 @@ public:
   virtual CoreStatistics getCoreStatistics() const override;
 
   //ICoreInformation
-     Checkpoints get_checkpoints();
   virtual size_t getPoolTransactionCount() const override;
   virtual size_t getBlockchainTransactionCount() const override;
   virtual size_t getAlternativeBlockCount() const override;
@@ -117,6 +116,8 @@ public:
   virtual std::vector<Crypto::Hash> getAlternativeBlockHashesByIndex(uint32_t blockIndex) const override;
   virtual std::vector<Crypto::Hash> getBlockHashesByTimestamps(uint64_t timestampBegin, size_t secondsCount) const override;
   virtual std::vector<Crypto::Hash> getTransactionHashesByPaymentId(const Crypto::Hash& paymentId) const override;
+
+  virtual uint64_t get_current_blockchain_height() const;
 
 private:
   const Currency& currency;
@@ -143,8 +144,6 @@ private:
   void throwIfNotInitialized() const;
   bool extractTransactions(const std::vector<BinaryArray>& rawTransactions, std::vector<CachedTransaction>& transactions, uint64_t& cumulativeSize);
 
-bool f_getMixin(const Transaction& transaction, uint64_t& mixin);
-std::error_code validateMixin(const Transaction& transaction, uint8_t majorBlockVersion);
   std::error_code validateSemantic(const Transaction& transaction, uint64_t& fee, uint32_t blockIndex);
   std::error_code validateTransaction(const CachedTransaction& transaction, TransactionValidatorState& state, IBlockchainCache* cache, uint64_t& fee, uint32_t blockIndex);
   

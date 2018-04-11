@@ -198,6 +198,7 @@ Core::Core(const Currency& currency, Logging::ILogger& logger, Checkpoints&& che
 
   upgradeManager->addMajorBlockVersion(BLOCK_MAJOR_VERSION_2, currency.upgradeHeight(BLOCK_MAJOR_VERSION_2));
   upgradeManager->addMajorBlockVersion(BLOCK_MAJOR_VERSION_3, currency.upgradeHeight(BLOCK_MAJOR_VERSION_3));
+  upgradeManager->addMajorBlockVersion(BLOCK_MAJOR_VERSION_4, currency.upgradeHeight(BLOCK_MAJOR_VERSION_4));
 
   transactionPool = std::unique_ptr<ITransactionPoolCleanWrapper>(new TransactionPoolCleanWrapper(
     std::unique_ptr<ITransactionPool>(new TransactionPool(logger)),
@@ -416,11 +417,25 @@ bool Core::queryBlocksLite(const std::vector<Crypto::Hash>& knownBlockHashes, ui
   assert(!chainsStorage.empty());
 
   throwIfNotInitialized();
+
   try {
     IBlockchainCache* mainChain = chainsLeaves[0];
     currentIndex = mainChain->getTopBlockIndex();
 
     startIndex = findBlockchainSupplement(knownBlockHashes); // throws
+
+    // Stops bug where wallets fail to sync, because timestamps have been adjusted after syncronisation.
+    // check for a query of the blocks where the block index is non-zero, but the timestamp is zero
+    // indicating that the originator did not know the internal time of the block, but knew which block
+    // was wanted by index.  Fullfill this by getting the time of m_blocks[startIndex].timestamp.
+
+    if (startIndex > 0 && timestamp == 0) {
+      if (startIndex <= mainChain->getTopBlockIndex()) {
+        RawBlock block = mainChain->getBlockByIndex(startIndex);
+        auto blockTemplate = extractBlockTemplate(block);
+        timestamp = blockTemplate.timestamp;
+      }
+    }
 
     fullOffset = mainChain->getTimestampLowerBoundBlockIndex(timestamp);
     if (fullOffset < startIndex) {
@@ -436,8 +451,8 @@ bool Core::queryBlocksLite(const std::vector<Crypto::Hash>& knownBlockHashes, ui
     fillQueryBlockShortInfo(fullOffset, currentIndex, BLOCKS_SYNCHRONIZING_DEFAULT_COUNT, entries);
 
     return true;
-  } catch (std::exception&) {
-    // TODO log
+  } catch (std::exception& e) {
+	logger(Logging::ERROR) << "Failed to query blocks: " << e.what();
     return false;
   }
 }
@@ -526,10 +541,15 @@ std::vector<Crypto::Hash> Core::findBlockchainSupplement(const std::vector<Crypt
 
 std::error_code Core::addBlock(const CachedBlock& cachedBlock, RawBlock&& rawBlock) {
   throwIfNotInitialized();
-  logger(Logging::DEBUGGING) << "Request to add block came for block " << cachedBlock.getBlockHash();
+  uint32_t blockIndex = cachedBlock.getBlockIndex();
+  Crypto::Hash blockHash = cachedBlock.getBlockHash();
+  std::ostringstream os;
+  os << blockIndex << " (" << blockHash << ")";
+  std::string blockStr = os.str();
 
+  logger(Logging::DEBUGGING) << "Request to add block " << blockStr;
   if (hasBlock(cachedBlock.getBlockHash())) {
-    logger(Logging::DEBUGGING) << "Block " << cachedBlock.getBlockHash() << " already exists";
+    logger(Logging::DEBUGGING) << "Block " << blockStr << " already exists";
     return error::AddBlockErrorCode::ALREADY_EXISTS;
   }
 
@@ -540,14 +560,14 @@ std::error_code Core::addBlock(const CachedBlock& cachedBlock, RawBlock&& rawBlo
 
   auto cache = findSegmentContainingBlock(previousBlockHash);
   if (cache == nullptr) {
-    logger(Logging::WARNING) << "Block " << cachedBlock.getBlockHash() << " rejected as orphaned";
+    logger(Logging::WARNING) << "Block " << blockStr << " rejected as orphaned";
     return error::AddBlockErrorCode::REJECTED_AS_ORPHANED;
   }
 
   std::vector<CachedTransaction> transactions;
   uint64_t cumulativeSize = 0;
   if (!extractTransactions(rawBlock.transactions, transactions, cumulativeSize)) {
-    logger(Logging::WARNING) << "Couldn't deserialize raw block transactions in block " << cachedBlock.getBlockHash();
+    logger(Logging::WARNING) << "Couldn't deserialize raw block transactions in block " << blockStr;
     return error::AddBlockErrorCode::DESERIALIZATION_FAILED;
   }
 
@@ -561,32 +581,20 @@ std::error_code Core::addBlock(const CachedBlock& cachedBlock, RawBlock&& rawBlo
   bool addOnTop = cache->getTopBlockIndex() == previousBlockIndex;
   auto maxBlockCumulativeSize = currency.maxBlockCumulativeSize(previousBlockIndex + 1);
   if (cumulativeBlockSize > maxBlockCumulativeSize) {
-    logger(Logging::WARNING) << "Block " << cachedBlock.getBlockHash() << " has too big cumulative size";
+    logger(Logging::WARNING) << "Block " << blockStr << " has too big cumulative size";
     return error::BlockValidationError::CUMULATIVE_BLOCK_SIZE_TOO_BIG;
   }
 
   uint64_t minerReward = 0;
   auto blockValidationResult = validateBlock(cachedBlock, cache, minerReward);
   if (blockValidationResult) {
-    logger(Logging::WARNING) << "Failed to validate block " << cachedBlock.getBlockHash() << ": " << blockValidationResult.message();
+    logger(Logging::WARNING) << "Failed to validate block " << blockStr << ": " << blockValidationResult.message();
     return blockValidationResult;
-  }
-
-  if (currency.mandatoryTransaction()) {
-    if (cachedBlock.getBlock().transactionHashes.size() < 1 && cache->getBlockIndex(cachedBlock.getBlockHash()) > parameters::CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW) {
-      logger(Logging::WARNING) << "New block must have at least one transaction";
-      return error::BlockValidationError::NOT_ENOUGH_TRANSACTIONS;
-    }
-  }
-
-  if (currency.killHeight() != 0 && cache->getBlockIndex(cachedBlock.getBlockHash()) > currency.killHeight()) {
-    logger(Logging::ERROR, Logging::BRIGHT_RED) << "Cannot add more blocks. Block " << currency.killHeight() << " is the kill block";
-      return error::BlockValidationError::NO_MORE_BLOCK;
   }
 
   auto currentDifficulty = cache->getDifficultyForNextBlock(previousBlockIndex);
   if (currentDifficulty == 0) {
-    logger(Logging::DEBUGGING) << "Block " << cachedBlock.getBlockHash() << " has difficulty overhead";
+    logger(Logging::DEBUGGING) << "Block " << blockStr << " has difficulty overhead";
     return error::BlockValidationError::DIFFICULTY_OVERHEAD;
   }
 
@@ -610,23 +618,23 @@ std::error_code Core::addBlock(const CachedBlock& cachedBlock, RawBlock&& rawBlo
 
   if (!currency.getBlockReward(cachedBlock.getBlock().majorVersion, blocksSizeMedian,
                                cumulativeBlockSize, alreadyGeneratedCoins, cumulativeFee, reward, emissionChange)) {
-    logger(Logging::WARNING) << "Block " << cachedBlock.getBlockHash() << " has too big cumulative size";
+    logger(Logging::WARNING) << "Block " << blockStr << " has too big cumulative size";
     return error::BlockValidationError::CUMULATIVE_BLOCK_SIZE_TOO_BIG;
   }
 
   if (minerReward != reward) {
-    logger(Logging::WARNING) << "Block reward mismatch for block " << cachedBlock.getBlockHash()
+    logger(Logging::WARNING) << "Block reward mismatch for block " << blockStr
                              << ". Expected reward: " << reward << ", got reward: " << minerReward;
     return error::BlockValidationError::BLOCK_REWARD_MISMATCH;
   }
 
   if (checkpoints.isInCheckpointZone(cachedBlock.getBlockIndex())) {
     if (!checkpoints.checkBlock(cachedBlock.getBlockIndex(), cachedBlock.getBlockHash())) {
-      logger(Logging::WARNING) << "Checkpoint block hash mismatch for block " << cachedBlock.getBlockHash();
+      logger(Logging::WARNING) << "Checkpoint block hash mismatch for block " << blockStr;
       return error::BlockValidationError::CHECKPOINT_BLOCK_HASH_MISMATCH;
     }
   } else if (!currency.checkProofOfWork(cryptoContext, cachedBlock, currentDifficulty)) {
-    logger(Logging::WARNING) << "Proof of work too weak for block " << cachedBlock.getBlockHash();
+    logger(Logging::WARNING) << "Proof of work too weak for block " << blockStr;
     return error::BlockValidationError::PROOF_OF_WORK_TOO_WEAK;
   }
 
@@ -647,15 +655,15 @@ std::error_code Core::addBlock(const CachedBlock& cachedBlock, RawBlock&& rawBlo
         actualizePoolTransactionsLite(validatorState);
 
         ret = error::AddBlockErrorCode::ADDED_TO_MAIN;
-        logger(Logging::DEBUGGING) << "Block " << cachedBlock.getBlockHash() << " added to main chain. Index: " << (previousBlockIndex + 1);
+        logger(Logging::DEBUGGING) << "Block " << blockStr << " added to main chain.";
         if ((previousBlockIndex + 1) % 100 == 0) {
-          logger(Logging::INFO) << "Block " << cachedBlock.getBlockHash() << " added to main chain. Index: " << (previousBlockIndex + 1);
+          logger(Logging::INFO) << "Block " << blockStr << " added to main chain";
         }
 
         notifyObservers(makeDelTransactionMessage(std::move(hashes), Messages::DeleteTransaction::Reason::InBlock));
       } else {
         cache->pushBlock(cachedBlock, transactions, validatorState, cumulativeBlockSize, emissionChange, currentDifficulty, std::move(rawBlock));
-        logger(Logging::WARNING) << "Block " << cachedBlock.getBlockHash() << " added to alternative chain. Index: " << (previousBlockIndex + 1);
+        logger(Logging::WARNING) << "Block " << blockStr << " added to alternative chain.";
 
         auto mainChainCache = chainsLeaves[0];
         if (cache->getCurrentCumulativeDifficulty() > mainChainCache->getCurrentCumulativeDifficulty()) {
@@ -674,8 +682,9 @@ std::error_code Core::addBlock(const CachedBlock& cachedBlock, RawBlock&& rawBlo
 
           ret = error::AddBlockErrorCode::ADDED_TO_ALTERNATIVE_AND_SWITCHED;
 
-          logger(Logging::INFO) << "Switching to alternative chain! New top block hash: " << cachedBlock.getBlockHash() << ", index: " << (previousBlockIndex + 1)
-                                << ", previous top block hash: " << chainsLeaves[endpointIndex]->getTopBlockHash() << ", index: " << chainsLeaves[endpointIndex]->getTopBlockIndex();
+          logger(Logging::INFO) << "Switching to alt chain! New top block: " << blockStr
+                                << ", previous top block: " << chainsLeaves[endpointIndex]->getTopBlockIndex() << " (" 
+                                << chainsLeaves[endpointIndex]->getTopBlockHash() << ")";
         }
       }
     } else {
@@ -687,7 +696,7 @@ std::error_code Core::addBlock(const CachedBlock& cachedBlock, RawBlock&& rawBlo
       chainsStorage.emplace_back(std::move(newCache));
       chainsLeaves.push_back(newlyForkedChainPtr);
 
-      logger(Logging::DEBUGGING) << "Adding alternative block: " << cachedBlock.getBlockHash();
+      logger(Logging::DEBUGGING) << "Adding alternative block: " << blockStr;
 
       newlyForkedChainPtr->pushBlock(cachedBlock, transactions, validatorState, cumulativeBlockSize, emissionChange,
                                      currentDifficulty, std::move(rawBlock));
@@ -696,7 +705,7 @@ std::error_code Core::addBlock(const CachedBlock& cachedBlock, RawBlock&& rawBlo
       updateBlockMedianSize();
     }
   } else {
-    logger(Logging::DEBUGGING) << "Adding alternative block: " << cachedBlock.getBlockHash();
+    logger(Logging::DEBUGGING) << "Adding alternative block: " << blockStr;
 
     auto upperSegment = cache->split(previousBlockIndex + 1);
     //[cache] is lower segment now
@@ -728,7 +737,7 @@ std::error_code Core::addBlock(const CachedBlock& cachedBlock, RawBlock&& rawBlo
     updateMainChainSet();
   }
 
-  logger(Logging::DEBUGGING) << "Block: " << cachedBlock.getBlockHash() << " successfully added";
+  logger(Logging::DEBUGGING) << "Block: " << blockStr << " successfully added";
   notifyOnSuccess(ret, previousBlockIndex, cachedBlock, *cache);
 
   return ret;
@@ -874,15 +883,13 @@ bool Core::getRandomOutputs(uint64_t amount, uint16_t count, std::vector<uint32_
     return true;
   }
 
-// Add bottomBlockLimit
-auto bottomBlockLimit = currency.mixinStartHeight();
   auto upperBlockLimit = getTopBlockIndex() - currency.minedMoneyUnlockWindow();
   if (upperBlockLimit < currency.minedMoneyUnlockWindow()) {
     logger(Logging::DEBUGGING) << "Blockchain height is less than mined unlock window";
     return false;
   }
 
- globalIndexes = chainsLeaves[0]->getRandomOutsByAmount(amount, count, getTopBlockIndex(), bottomBlockLimit);
+  globalIndexes = chainsLeaves[0]->getRandomOutsByAmount(amount, count, getTopBlockIndex());
   if (globalIndexes.empty()) {
     return false;
   }
@@ -1072,12 +1079,6 @@ bool Core::getBlockTemplate(BlockTemplate& b, const AccountPublicAddress& adr, c
     return false;
   }
 
-  if (currency.mandatoryTransaction()) {
-    if (transactionsSize == 0 && height > parameters::CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW) { 
-      logger(Logging::ERROR, Logging::BRIGHT_RED) << "Need at least one transaction beside base transaction";
-      return false;
-    }
-  }
   size_t cumulativeSize = transactionsSize + getObjectBinarySize(b.baseTransaction);
   const size_t TRIES_COUNT = 10;
   for (size_t tryCount = 0; tryCount < TRIES_COUNT; ++tryCount) {
@@ -1145,9 +1146,6 @@ CoreStatistics Core::getCoreStatistics() const {
   return result;
 }
 
-Checkpoints Core::get_checkpoints() {
-  return checkpoints;
-}
 size_t Core::getPoolTransactionCount() const {
   throwIfNotInitialized();
   return transactionPool->getTransactionCount();
@@ -1225,12 +1223,6 @@ std::error_code Core::validateTransaction(const CachedTransaction& cachedTransac
                                           IBlockchainCache* cache, uint64_t& fee, uint32_t blockIndex) {
   // TransactionValidatorState currentState;
   const auto& transaction = cachedTransaction.getTransaction();
-uint8_t blockMajorVersion = getBlockMajorVersionForHeight(blockIndex);
-auto error_mixin = validateMixin(transaction, blockMajorVersion);
-if (error_mixin != error::TransactionValidationError::VALIDATION_SUCCESS) {
-  return error_mixin;
-}
-
 auto error = validateSemantic(transaction, fee, blockIndex);
   if (error != error::TransactionValidationError::VALIDATION_SUCCESS) {
     return error;
@@ -1272,7 +1264,7 @@ auto error = validateSemantic(transaction, fee, blockIndex);
         std::for_each(outputKeys.begin(), outputKeys.end(), [&outputKeyPointers] (const Crypto::PublicKey& key) { outputKeyPointers.push_back(&key); });
         if (!Crypto::check_ring_signature(cachedTransaction.getTransactionPrefixHash(), in.keyImage, outputKeyPointers.data(),
                                           outputKeyPointers.size(), transaction.signatures[inputIndex].data(),
-                                          blockIndex > currency.keyImageCheckingBlockIndex())) {
+                                          blockIndex > parameters::KEY_IMAGE_CHECKING_BLOCK_INDEX)) {
           return error::TransactionValidationError::INPUT_INVALID_SIGNATURES;
         }
       }
@@ -1285,29 +1277,6 @@ auto error = validateSemantic(transaction, fee, blockIndex);
     inputIndex++;
   }
 
-  return error::TransactionValidationError::VALIDATION_SUCCESS;
-}
-
-bool Core::f_getMixin(const Transaction& transaction, uint64_t& mixin) {
-  mixin = 0;
-  for (const TransactionInput& txin : transaction.inputs) {
-    if (txin.type() != typeid(KeyInput)) {
-      continue;
-    }
-    uint64_t currentMixin = boost::get<KeyInput>(txin).outputIndexes.size();
-    if (currentMixin > mixin) {
-      mixin = currentMixin;
-    }
-  }
-  return true;
-}
-
-std::error_code Core::validateMixin(const Transaction& transaction, uint8_t majorBlockVersion) {
-  uint64_t mixin = 0;
-  f_getMixin(transaction, mixin);
-  if (currency.mandatoryMixinBlockVersion() >= majorBlockVersion && mixin < currency.minMixin()) {
-    return error::TransactionValidationError::MIXIN_COUNT_TOO_SMALL;
-  }
   return error::TransactionValidationError::VALIDATION_SUCCESS;
 }
 
@@ -1361,7 +1330,7 @@ std::error_code Core::validateSemantic(const Transaction& transaction, uint64_t&
       // outputIndexes are packed here, first is absolute, others are offsets to previous,
       // so first can be zero, others can't
   // Fix discovered by Monero Lab and suggested by "fluffypony" (bitcointalk.org)
-  if (!(scalarmultKey(in.keyImage, L) == I) && blockIndex > currency.keyImageCheckingBlockIndex()) {
+  if (!(scalarmultKey(in.keyImage, L) == I) && blockIndex > parameters::KEY_IMAGE_CHECKING_BLOCK_INDEX) {
     return error::TransactionValidationError::INPUT_INVALID_DOMAIN_KEYIMAGES;
   }
 
@@ -2302,4 +2271,11 @@ void Core::updateBlockMedianSize() {
   blockMedianSize = std::max(Common::medianValue(lastBlockSizes), static_cast<uint64_t>(nextBlockGrantedFullRewardZone));
 }
 
+uint64_t Core::get_current_blockchain_height() const
+{
+	// TODO: remove when GetCoreStatistics is implemented
+	return mainChainStorage->getBlockCount();
 }
+
+}
+

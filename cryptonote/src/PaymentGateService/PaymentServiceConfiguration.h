@@ -38,9 +38,13 @@ struct Configuration {
 
   std::string bindAddress;
   uint16_t bindPort;
+  std::string rpcPassword;
 
   std::string containerFile;
   std::string containerPassword;
+  std::string secretViewKey;
+  std::string secretSpendKey;
+  std::string mnemonicSeed;
   std::string logFile;
   std::string serverRoot;
 
@@ -51,6 +55,7 @@ struct Configuration {
   bool testnet;
   bool printAddresses;
   bool syncFromZero;
+  bool legacySecurity;
 
   size_t logLevel;
 };

@@ -25,10 +25,12 @@
 #include "Serialization/JsonInputValueSerializer.h"
 #include "Serialization/JsonOutputStreamSerializer.h"
 
+#include "Rpc/JsonRpc.h"
+
 namespace PaymentService {
 
-PaymentServiceJsonRpcServer::PaymentServiceJsonRpcServer(System::Dispatcher& sys, System::Event& stopEvent, WalletService& service, Logging::ILogger& loggerGroup) 
-  : JsonRpcServer(sys, stopEvent, loggerGroup)
+PaymentServiceJsonRpcServer::PaymentServiceJsonRpcServer(System::Dispatcher& sys, System::Event& stopEvent, WalletService& service, Logging::ILogger& loggerGroup, PaymentService::Configuration& config) 
+  : JsonRpcServer(sys, stopEvent, loggerGroup, config)
   , service(service)
   , logger(loggerGroup, "PaymentServiceJsonRpcServer")
 {
@@ -51,9 +53,9 @@ PaymentServiceJsonRpcServer::PaymentServiceJsonRpcServer(System::Dispatcher& sys
   handlers.emplace("deleteDelayedTransaction", jsonHandler<DeleteDelayedTransaction::Request, DeleteDelayedTransaction::Response>(std::bind(&PaymentServiceJsonRpcServer::handleDeleteDelayedTransaction, this, std::placeholders::_1, std::placeholders::_2)));
   handlers.emplace("sendDelayedTransaction", jsonHandler<SendDelayedTransaction::Request, SendDelayedTransaction::Response>(std::bind(&PaymentServiceJsonRpcServer::handleSendDelayedTransaction, this, std::placeholders::_1, std::placeholders::_2)));
   handlers.emplace("getViewKey", jsonHandler<GetViewKey::Request, GetViewKey::Response>(std::bind(&PaymentServiceJsonRpcServer::handleGetViewKey, this, std::placeholders::_1, std::placeholders::_2)));
+  handlers.emplace("getMnemonicSeed", jsonHandler<GetMnemonicSeed::Request, GetMnemonicSeed::Response>(std::bind(&PaymentServiceJsonRpcServer::handleGetMnemonicSeed, this, std::placeholders::_1, std::placeholders::_2)));
   handlers.emplace("getStatus", jsonHandler<GetStatus::Request, GetStatus::Response>(std::bind(&PaymentServiceJsonRpcServer::handleGetStatus, this, std::placeholders::_1, std::placeholders::_2)));
   handlers.emplace("getAddresses", jsonHandler<GetAddresses::Request, GetAddresses::Response>(std::bind(&PaymentServiceJsonRpcServer::handleGetAddresses, this, std::placeholders::_1, std::placeholders::_2)));
-  handlers.emplace("getUnspendOuts", jsonHandler<GetUnspendOuts::Request, GetUnspendOuts::Response>(std::bind(&PaymentServiceJsonRpcServer::handleGetUnspendOuts, this, std::placeholders::_1, std::placeholders::_2)));
   handlers.emplace("sendFusionTransaction", jsonHandler<SendFusionTransaction::Request, SendFusionTransaction::Response>(std::bind(&PaymentServiceJsonRpcServer::handleSendFusionTransaction, this, std::placeholders::_1, std::placeholders::_2)));
   handlers.emplace("estimateFusion", jsonHandler<EstimateFusion::Request, EstimateFusion::Response>(std::bind(&PaymentServiceJsonRpcServer::handleEstimateFusion, this, std::placeholders::_1, std::placeholders::_2)));
 }
@@ -61,6 +63,23 @@ PaymentServiceJsonRpcServer::PaymentServiceJsonRpcServer(System::Dispatcher& sys
 void PaymentServiceJsonRpcServer::processJsonRpcRequest(const Common::JsonValue& req, Common::JsonValue& resp) {
   try {
     prepareJsonResponse(req, resp);
+    
+    if (!config.legacySecurity) {
+      std::string clientPassword;
+      if (!req.contains("password")) {
+        makeInvalidPasswordResponse(resp);
+        return;
+      }   
+      if (!req("password").isString()) {
+        makeInvalidPasswordResponse(resp);
+        return;
+      }
+      clientPassword = req("password").getString();
+      if (clientPassword != config.rpcPassword) {
+        makeInvalidPasswordResponse(resp);
+        return;
+      }
+    }
 
     if (!req.contains("method")) {
       logger(Logging::WARNING) << "Field \"method\" is not found in json request: " << req;
@@ -195,16 +214,16 @@ std::error_code PaymentServiceJsonRpcServer::handleGetViewKey(const GetViewKey::
   return service.getViewKey(response.viewSecretKey);
 }
 
+std::error_code PaymentServiceJsonRpcServer::handleGetMnemonicSeed(const GetMnemonicSeed::Request& request, GetMnemonicSeed::Response& response) {
+  return service.getMnemonicSeed(request.address, response.mnemonicSeed);
+}
+
 std::error_code PaymentServiceJsonRpcServer::handleGetStatus(const GetStatus::Request& request, GetStatus::Response& response) {
   return service.getStatus(response.blockCount, response.knownBlockCount, response.lastBlockHash, response.peerCount);
 }
 
 std::error_code PaymentServiceJsonRpcServer::handleGetAddresses(const GetAddresses::Request& request, GetAddresses::Response& response) {
   return service.getAddresses(response.addresses);
-}
-
-std::error_code PaymentServiceJsonRpcServer::handleGetUnspendOuts(const GetUnspendOuts::Request& request, GetUnspendOuts::Response& response) {
-  return service.getUnspendOuts(request, response.outputs);
 }
 
 std::error_code PaymentServiceJsonRpcServer::handleSendFusionTransaction(const SendFusionTransaction::Request& request, SendFusionTransaction::Response& response) {

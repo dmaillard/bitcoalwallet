@@ -1,7 +1,7 @@
-// Copyright (c) 2015, Facebook, Inc.  All rights reserved.
-// This source code is licensed under the BSD-style license found in the
-// LICENSE file in the root directory of this source tree. An additional grant
-// of patent rights can be found in the PATENTS file in the same directory.
+// Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 
 #pragma once
 
@@ -19,6 +19,21 @@ namespace rocksdb {
 class Iterator;
 class TransactionDB;
 class WriteBatchWithIndex;
+
+using TransactionName = std::string;
+
+using TransactionID = uint64_t;
+
+// Provides notification to the caller of SetSnapshotOnNextOperation when
+// the actual snapshot gets created
+class TransactionNotifier {
+ public:
+  virtual ~TransactionNotifier() {}
+
+  // Implement this method to receive notification when a snapshot is
+  // requested via SetSnapshotOnNextOperation.
+  virtual void SnapshotCreated(const Snapshot* newSnapshot) = 0;
+};
 
 // Provides BEGIN/COMMIT/ROLLBACK transactions.
 //
@@ -61,11 +76,50 @@ class Transaction {
   // methods.  See Transaction::Get() for more details.
   virtual void SetSnapshot() = 0;
 
+  // Similar to SetSnapshot(), but will not change the current snapshot
+  // until Put/Merge/Delete/GetForUpdate/MultigetForUpdate is called.
+  // By calling this function, the transaction will essentially call
+  // SetSnapshot() for you right before performing the next write/GetForUpdate.
+  //
+  // Calling SetSnapshotOnNextOperation() will not affect what snapshot is
+  // returned by GetSnapshot() until the next write/GetForUpdate is executed.
+  //
+  // When the snapshot is created the notifier's SnapshotCreated method will
+  // be called so that the caller can get access to the snapshot.
+  //
+  // This is an optimization to reduce the likelihood of conflicts that
+  // could occur in between the time SetSnapshot() is called and the first
+  // write/GetForUpdate operation.  Eg, this prevents the following
+  // race-condition:
+  //
+  //   txn1->SetSnapshot();
+  //                             txn2->Put("A", ...);
+  //                             txn2->Commit();
+  //   txn1->GetForUpdate(opts, "A", ...);  // FAIL!
+  virtual void SetSnapshotOnNextOperation(
+      std::shared_ptr<TransactionNotifier> notifier = nullptr) = 0;
+
   // Returns the Snapshot created by the last call to SetSnapshot().
   //
   // REQUIRED: The returned Snapshot is only valid up until the next time
-  // SetSnapshot() is called or the Transaction is deleted.
+  // SetSnapshot()/SetSnapshotOnNextSavePoint() is called, ClearSnapshot()
+  // is called, or the Transaction is deleted.
   virtual const Snapshot* GetSnapshot() const = 0;
+
+  // Clears the current snapshot (i.e. no snapshot will be 'set')
+  //
+  // This removes any snapshot that currently exists or is set to be created
+  // on the next update operation (SetSnapshotOnNextOperation).
+  //
+  // Calling ClearSnapshot() has no effect on keys written before this function
+  // has been called.
+  //
+  // If a reference to a snapshot was retrieved via GetSnapshot(), it will no
+  // longer be valid and should be discarded after a call to ClearSnapshot().
+  virtual void ClearSnapshot() = 0;
+
+  // Prepare the current transation for 2PC
+  virtual Status Prepare() = 0;
 
   // Write all batched keys to the db atomically.
   //
@@ -85,7 +139,7 @@ class Transaction {
   virtual Status Commit() = 0;
 
   // Discard all batched writes in this transaction.
-  virtual void Rollback() = 0;
+  virtual Status Rollback() = 0;
 
   // Records the state of the transaction for future calls to
   // RollbackToSavePoint().  May be called multiple times to set multiple save
@@ -115,8 +169,26 @@ class Transaction {
                      ColumnFamilyHandle* column_family, const Slice& key,
                      std::string* value) = 0;
 
+  // An overload of the the above method that receives a PinnableSlice
+  // For backward compatiblity a default implementation is provided
+  virtual Status Get(const ReadOptions& options,
+                     ColumnFamilyHandle* column_family, const Slice& key,
+                     PinnableSlice* pinnable_val) {
+    assert(pinnable_val != nullptr);
+    auto s = Get(options, column_family, key, pinnable_val->GetSelf());
+    pinnable_val->PinSelf();
+    return s;
+  }
+
   virtual Status Get(const ReadOptions& options, const Slice& key,
                      std::string* value) = 0;
+  virtual Status Get(const ReadOptions& options, const Slice& key,
+                     PinnableSlice* pinnable_val) {
+    assert(pinnable_val != nullptr);
+    auto s = Get(options, key, pinnable_val->GetSelf());
+    pinnable_val->PinSelf();
+    return s;
+  }
 
   virtual std::vector<Status> MultiGet(
       const ReadOptions& options,
@@ -155,10 +227,27 @@ class Transaction {
   // or other errors if this key could not be read.
   virtual Status GetForUpdate(const ReadOptions& options,
                               ColumnFamilyHandle* column_family,
-                              const Slice& key, std::string* value) = 0;
+                              const Slice& key, std::string* value,
+                              bool exclusive = true) = 0;
+
+  // An overload of the the above method that receives a PinnableSlice
+  // For backward compatiblity a default implementation is provided
+  virtual Status GetForUpdate(const ReadOptions& options,
+                              ColumnFamilyHandle* column_family,
+                              const Slice& key, PinnableSlice* pinnable_val,
+                              bool exclusive = true) {
+    if (pinnable_val == nullptr) {
+      std::string* null_str = nullptr;
+      return GetForUpdate(options, key, null_str);
+    } else {
+      auto s = GetForUpdate(options, key, pinnable_val->GetSelf());
+      pinnable_val->PinSelf();
+      return s;
+    }
+  }
 
   virtual Status GetForUpdate(const ReadOptions& options, const Slice& key,
-                              std::string* value) = 0;
+                              std::string* value, bool exclusive = true) = 0;
 
   virtual std::vector<Status> MultiGetForUpdate(
       const ReadOptions& options,
@@ -178,14 +267,10 @@ class Transaction {
   // in this transaction do not yet belong to any snapshot and will be fetched
   // regardless).
   //
-  // Caller is reponsible for deleting the returned Iterator.
+  // Caller is responsible for deleting the returned Iterator.
   //
   // The returned iterator is only valid until Commit(), Rollback(), or
   // RollbackToSavePoint() is called.
-  // NOTE: Transaction::Put/Merge/Delete will currently invalidate this iterator
-  // until
-  // the following issue is fixed:
-  // https://github.com/facebook/rocksdb/issues/616
   virtual Iterator* GetIterator(const ReadOptions& read_options) = 0;
 
   virtual Iterator* GetIterator(const ReadOptions& read_options,
@@ -236,9 +321,9 @@ class Transaction {
   // gets committed successfully.  But unlike Transaction::Put(),
   // no conflict checking will be done for this key.
   //
-  // If this Transaction was created on a TransactionDB, this function will
-  // still acquire locks necessary to make sure this write doesn't cause
-  // conflicts in other transactions and may return Status::Busy().
+  // If this Transaction was created on a PessimisticTransactionDB, this
+  // function will still acquire locks necessary to make sure this write doesn't
+  // cause conflicts in other transactions and may return Status::Busy().
   virtual Status PutUntracked(ColumnFamilyHandle* column_family,
                               const Slice& key, const Slice& value) = 0;
   virtual Status PutUntracked(const Slice& key, const Slice& value) = 0;
@@ -259,9 +344,28 @@ class Transaction {
   virtual Status DeleteUntracked(ColumnFamilyHandle* column_family,
                                  const SliceParts& key) = 0;
   virtual Status DeleteUntracked(const SliceParts& key) = 0;
+  virtual Status SingleDeleteUntracked(ColumnFamilyHandle* column_family,
+                                       const Slice& key) = 0;
+
+  virtual Status SingleDeleteUntracked(const Slice& key) = 0;
 
   // Similar to WriteBatch::PutLogData
   virtual void PutLogData(const Slice& blob) = 0;
+
+  // By default, all Put/Merge/Delete operations will be indexed in the
+  // transaction so that Get/GetForUpdate/GetIterator can search for these
+  // keys.
+  //
+  // If the caller does not want to fetch the keys about to be written,
+  // they may want to avoid indexing as a performance optimization.
+  // Calling DisableIndexing() will turn off indexing for all future
+  // Put/Merge/Delete operations until EnableIndexing() is called.
+  //
+  // If a key is Put/Merge/Deleted after DisableIndexing is called and then
+  // is fetched via Get/GetForUpdate/GetIterator, the result of the fetch is
+  // undefined.
+  virtual void DisableIndexing() = 0;
+  virtual void EnableIndexing() = 0;
 
   // Returns the number of distinct Keys being tracked by this transaction.
   // If this transaction was created by a TransactinDB, this is the number of
@@ -283,7 +387,7 @@ class Transaction {
   // committed.
   //
   // Note:  You should not write or delete anything from the batch directly and
-  // should only use the the functions in the Transaction class to
+  // should only use the functions in the Transaction class to
   // write to this transaction.
   virtual WriteBatchWithIndex* GetWriteBatch() = 0;
 
@@ -292,11 +396,98 @@ class Transaction {
   // Has no effect on OptimisticTransactions.
   virtual void SetLockTimeout(int64_t timeout) = 0;
 
+  // Return the WriteOptions that will be used during Commit()
+  virtual WriteOptions* GetWriteOptions() = 0;
+
+  // Reset the WriteOptions that will be used during Commit().
+  virtual void SetWriteOptions(const WriteOptions& write_options) = 0;
+
+  // If this key was previously fetched in this transaction using
+  // GetForUpdate/MultigetForUpdate(), calling UndoGetForUpdate will tell
+  // the transaction that it no longer needs to do any conflict checking
+  // for this key.
+  //
+  // If a key has been fetched N times via GetForUpdate/MultigetForUpdate(),
+  // then UndoGetForUpdate will only have an effect if it is also called N
+  // times.  If this key has been written to in this transaction,
+  // UndoGetForUpdate() will have no effect.
+  //
+  // If SetSavePoint() has been called after the GetForUpdate(),
+  // UndoGetForUpdate() will not have any effect.
+  //
+  // If this Transaction was created by an OptimisticTransactionDB,
+  // calling UndoGetForUpdate can affect whether this key is conflict checked
+  // at commit time.
+  // If this Transaction was created by a TransactionDB,
+  // calling UndoGetForUpdate may release any held locks for this key.
+  virtual void UndoGetForUpdate(ColumnFamilyHandle* column_family,
+                                const Slice& key) = 0;
+  virtual void UndoGetForUpdate(const Slice& key) = 0;
+
+  virtual Status RebuildFromWriteBatch(WriteBatch* src_batch) = 0;
+
+  virtual WriteBatch* GetCommitTimeWriteBatch() = 0;
+
+  virtual void SetLogNumber(uint64_t log) { log_number_ = log; }
+
+  virtual uint64_t GetLogNumber() const { return log_number_; }
+
+  virtual Status SetName(const TransactionName& name) = 0;
+
+  virtual TransactionName GetName() const { return name_; }
+
+  virtual TransactionID GetID() const { return 0; }
+
+  virtual bool IsDeadlockDetect() const { return false; }
+
+  virtual std::vector<TransactionID> GetWaitingTxns(uint32_t* column_family_id,
+                                                    std::string* key) const {
+    assert(false);
+    return std::vector<TransactionID>();
+  }
+
+  enum TransactionState {
+    STARTED = 0,
+    AWAITING_PREPARE = 1,
+    PREPARED = 2,
+    AWAITING_COMMIT = 3,
+    COMMITED = 4,
+    AWAITING_ROLLBACK = 5,
+    ROLLEDBACK = 6,
+    LOCKS_STOLEN = 7,
+  };
+
+  TransactionState GetState() const { return txn_state_; }
+  void SetState(TransactionState state) { txn_state_ = state; }
+
+  // NOTE: Experimental feature
+  // The globally unique id with which the transaction is identified. This id
+  // might or might not be set depending on the implementation. Similarly the
+  // implementation decides the point in lifetime of a transaction at which it
+  // assigns the id. Although currently it is the case, the id is not guaranteed
+  // to remain the same across restarts.
+  uint64_t GetId() { return id_; }
+
  protected:
   explicit Transaction(const TransactionDB* db) {}
-  Transaction() {}
+  Transaction() : log_number_(0), txn_state_(STARTED) {}
+
+  // the log in which the prepared section for this txn resides
+  // (for two phase commit)
+  uint64_t log_number_;
+  TransactionName name_;
+
+  // Execution status of the transaction.
+  std::atomic<TransactionState> txn_state_;
+
+  uint64_t id_ = 0;
+  virtual void SetId(uint64_t id) {
+    assert(id_ == 0);
+    id_ = id;
+  }
 
  private:
+  friend class PessimisticTransactionDB;
   // No copying allowed
   Transaction(const Transaction&);
   void operator=(const Transaction&);

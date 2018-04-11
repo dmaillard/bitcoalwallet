@@ -146,7 +146,7 @@ WalletGreen::WalletGreen(System::Dispatcher& dispatcher, const Currency& currenc
   m_pendingBalance(0),
   m_transactionSoftLockTime(transactionSoftLockTime)
 {
-  m_upperTransactionSizeLimit = m_currency.maxTransactionSizeLimit();
+  m_upperTransactionSizeLimit = parameters::CRYPTONOTE_MAX_SAFE_TX_SIZE;
   m_readyEvent.set();
 }
 
@@ -156,6 +156,23 @@ WalletGreen::~WalletGreen() {
   }
 
   m_dispatcher.yield(); //let remote spawns finish
+}
+
+void WalletGreen::createViewWallet(const std::string &path,
+                                   const std::string &password,
+                                   const std::string address,
+                                   const Crypto::SecretKey &viewSecretKey)
+{
+    CryptoNote::AccountPublicAddress publicKeys;
+    uint64_t prefix;
+
+    if (!CryptoNote::parseAccountAddressString(prefix, publicKeys, address))
+    {
+        throw std::runtime_error("Failed to parse address!");
+    }
+
+    initializeWithViewKey(path, password, viewSecretKey);
+    createAddress(publicKeys.spendPublicKey);
 }
 
 void WalletGreen::initialize(const std::string& path, const std::string& password) {
@@ -197,12 +214,31 @@ void WalletGreen::doShutdown() {
 
   m_containerStorage.close();
   m_walletsContainer.clear();
+
   clearCaches(true, true);
 
   std::queue<WalletEvent> noEvents;
   std::swap(m_events, noEvents);
 
   m_state = WalletState::NOT_INITIALIZED;
+}
+
+void WalletGreen::clearCacheAndShutdown()
+{
+  if (m_walletsContainer.size() != 0) {
+    m_synchronizer.unsubscribeConsumerNotifications(m_viewPublicKey, this);
+  }
+
+  stopBlockchainSynchronizer();
+  m_blockchainSynchronizer.removeObserver(this);
+
+  clearCaches(true, true);
+
+  saveWalletCache(m_containerStorage, m_key, WalletSaveLevel::SAVE_ALL, "");
+
+  m_walletsContainer.clear();
+
+  shutdown();
 }
 
 void WalletGreen::clearCaches(bool clearTransactions, bool clearCachedData) {
@@ -1110,35 +1146,6 @@ std::string WalletGreen::addWallet(const Crypto::PublicKey& spendPublicKey, cons
   }
 }
 
-std::vector<WalletOutput> WalletGreen::getAddressOutputs(const std::string& address) const {
-  throwIfNotInitialized();
-  throwIfStopped();
-
-  std::vector<WalletOutput> outputs;
-
-  const auto& wallet = getWalletRecord(address);
-
-  ITransfersContainer* container = wallet.container;
-  WalletOuts outs;
-  container->getOutputs(outs.outs, ITransfersContainer::IncludeKeyUnlocked);
-
-  for (const auto& out: outs.outs) {
-    WalletOutput output;
-
-    output.type = uint8_t(out.type);
-    output.amount = out.amount;
-
-    output.globalOutputIndex = out.globalOutputIndex;
-    output.outputInTransaction = out.outputInTransaction;
-    output.transactionHash = Common::podToHex(out.transactionHash);
-    output.transactionPublicKey = Common::podToHex(out.transactionPublicKey);
-    output.outputKey = Common::podToHex(out.outputKey);
-
-    outputs.push_back(output);
-  }
-
-  return outputs;
-}
 void WalletGreen::deleteAddress(const std::string& address) {
   throwIfNotInitialized();
   throwIfStopped();
@@ -1572,6 +1579,44 @@ size_t WalletGreen::doTransfer(const TransactionParameters& transactionParameter
     preparedTransaction);
 
   return validateSaveAndSendTransaction(*preparedTransaction.transaction, preparedTransaction.destinations, false, true);
+}
+
+size_t WalletGreen::getTxSize(const TransactionParameters &sendingTransaction)
+{
+  System::EventLock lk(m_readyEvent);
+
+  throwIfNotInitialized();
+  throwIfTrackingMode();
+  throwIfStopped();
+
+  CryptoNote::AccountPublicAddress changeDestination = getChangeDestination(sendingTransaction.changeDestination, sendingTransaction.sourceAddresses);
+
+  std::vector<WalletOuts> wallets;
+  if (!sendingTransaction.sourceAddresses.empty()) {
+    wallets = pickWallets(sendingTransaction.sourceAddresses);
+  } else {
+    wallets = pickWalletsWithMoney();
+  }
+
+  PreparedTransaction preparedTransaction;
+  prepareTransaction(
+    std::move(wallets),
+    sendingTransaction.destinations,
+    sendingTransaction.fee,
+    sendingTransaction.mixIn,
+    sendingTransaction.extra,
+    sendingTransaction.unlockTimestamp,
+    sendingTransaction.donation,
+    changeDestination,
+    preparedTransaction);
+
+  BinaryArray transactionData = preparedTransaction.transaction->getTransactionData();
+  return transactionData.size();
+}
+
+bool WalletGreen::txIsTooLarge(const TransactionParameters& sendingTransaction)
+{
+  return getTxSize(sendingTransaction) > m_upperTransactionSizeLimit;
 }
 
 size_t WalletGreen::makeTransaction(const TransactionParameters& sendingTransaction) {
@@ -2786,6 +2831,15 @@ void WalletGreen::startBlockchainSynchronizer() {
     m_blockchainSynchronizer.start();
     m_blockchainSynchronizerStarted = true;
   }
+}
+
+/* The blockchain events are sent to us from the blockchain synchronizer,
+   but they appear to not get executed on the dispatcher until the synchronizer
+   stops. After some investigation, it appears that we need to run this
+   archaic line of code to run other code on the dispatcher? */
+void WalletGreen::updateInternalCache() {
+    System::RemoteContext<void> updateInternalBC(m_dispatcher, [this] () {});
+    updateInternalBC.get();
 }
 
 void WalletGreen::stopBlockchainSynchronizer() {

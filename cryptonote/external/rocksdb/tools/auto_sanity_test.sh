@@ -1,4 +1,5 @@
-TMP_DIR="/tmp/rocksdb-sanity-test"
+# shellcheck disable=SC2148
+TMP_DIR="${TMPDIR:-/tmp}/rocksdb-sanity-test"
 
 if [ "$#" -lt 2 ]; then
   echo "usage: ./auto_sanity_test.sh [new_commit] [old_commit]"
@@ -64,11 +65,11 @@ echo "Creating db based on the old commit --- $commit_old"
 ./old_db_sanity_test $dir_old create
 
 echo "============================================================="
-echo "[Backward Compability Check]"
+echo "[Backward Compatibility Check]"
 echo "Verifying old db $dir_old using the new commit --- $commit_new"
 ./new_db_sanity_test $dir_old verify
 if [ $? -ne 0 ]; then
-  echo "[ERROR] Backward Compability Check fails:"
+  echo "[ERROR] Backward Compatibility Check fails:"
   echo "    Verification of $dir_old using commit $commit_new failed."
   exit 2
 fi
@@ -78,7 +79,7 @@ echo "[Forward Compatibility Check]"
 echo "Verifying new db $dir_new using the old commit --- $commit_old"
 ./old_db_sanity_test $dir_new verify
 if [ $? -ne 0 ]; then
-  echo "[ERROR] Forward Compability Check fails:"
+  echo "[ERROR] Forward Compatibility Check fails:"
   echo "    $dir_new using commit $commit_old failed."
   exit 2
 fi

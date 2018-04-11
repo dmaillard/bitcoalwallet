@@ -1,7 +1,7 @@
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 //
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
@@ -25,9 +25,14 @@
 #include <string>
 #include <string.h>
 #include <mutex>
+#include <limits>
 #include <condition_variable>
+#include <malloc.h>
+#include <intrin.h>
 
 #include <stdint.h>
+
+#include "port/win/win_thread.h"
 
 #include "rocksdb/options.h"
 
@@ -41,15 +46,12 @@
 #define strcasecmp _stricmp
 #endif
 
-// defined in stdio.h
-#ifndef snprintf
-#define snprintf _snprintf
-#endif
-
 #undef GetCurrentTime
 #undef DeleteFile
 
+#ifndef _SSIZE_T_DEFINED
 typedef SSIZE_T ssize_t;
+#endif
 
 // size_t printf formatting named in the manner of C99 standard formatting
 // strings such as PRIu64
@@ -58,31 +60,15 @@ typedef SSIZE_T ssize_t;
 #define ROCKSDB_PRIszt "Iu"
 #endif
 
-#define ROCKSDB_NOEXCEPT
-
+#ifdef _MSC_VER
 #define __attribute__(A)
-
-#ifdef ZLIB
-#include <zlib.h>
-#endif
-
-#ifdef BZIP2
-#include <bzlib.h>
-#endif
-
-#if defined(LZ4)
-#include <lz4.h>
-#include <lz4hc.h>
-#endif
-
-#ifdef SNAPPY
-#include <snappy.h>
-#endif
 
 // Thread local storage on Linux
 // There is thread_local in C++11
 #ifndef __thread
 #define __thread __declspec(thread)
+#endif
+
 #endif
 
 #ifndef PLATFORM_IS_LITTLE_ENDIAN
@@ -92,20 +78,44 @@ typedef SSIZE_T ssize_t;
 namespace rocksdb {
 
 #define PREFETCH(addr, rw, locality)
-std::string GetWindowsErrSz(DWORD err);
 
 namespace port {
 
-// For use at db/file_indexer.h kLevelMaxIndex
-const int kMaxInt32 = INT32_MAX;
-const uint64_t kMaxUint64 = UINT64_MAX;
+// VS < 2015
+#if defined(_MSC_VER) && (_MSC_VER < 1900)
+
+// VS 15 has snprintf
+#define snprintf _snprintf
+
+#define ROCKSDB_NOEXCEPT
 // std::numeric_limits<size_t>::max() is not constexpr just yet
 // therefore, use the same limits
+
+// For use at db/file_indexer.h kLevelMaxIndex
+const uint32_t kMaxUint32 = UINT32_MAX;
+const int kMaxInt32 = INT32_MAX;
+const int64_t kMaxInt64 = INT64_MAX;
+const uint64_t kMaxUint64 = UINT64_MAX;
+
 #ifdef _WIN64
 const size_t kMaxSizet = UINT64_MAX;
 #else
 const size_t kMaxSizet = UINT_MAX;
 #endif
+
+#else // VS >= 2015 or MinGW
+
+#define ROCKSDB_NOEXCEPT noexcept
+
+// For use at db/file_indexer.h kLevelMaxIndex
+const uint32_t kMaxUint32 = std::numeric_limits<uint32_t>::max();
+const int kMaxInt32 = std::numeric_limits<int>::max();
+const uint64_t kMaxUint64 = std::numeric_limits<uint64_t>::max();
+const int64_t kMaxInt64 = std::numeric_limits<int64_t>::max();
+
+const size_t kMaxSizet = std::numeric_limits<size_t>::max();
+
+#endif //_MSC_VER
 
 const bool kLittleEndian = true;
 
@@ -207,18 +217,75 @@ class CondVar {
   Mutex* mu_;
 };
 
-typedef std::once_flag OnceType;
-#define LEVELDB_ONCE_INIT std::once_flag::once_flag();
+// Wrapper around the platform efficient
+// or otherwise preferrable implementation
+using Thread = WindowsThread;
+
+// OnceInit type helps emulate
+// Posix semantics with initialization
+// adopted in the project
+struct OnceType {
+
+    struct Init {};
+
+    OnceType() {}
+    OnceType(const Init&) {}
+    OnceType(const OnceType&) = delete;
+    OnceType& operator=(const OnceType&) = delete;
+
+    std::once_flag flag_;
+};
+
+#define LEVELDB_ONCE_INIT port::OnceType::Init()
 extern void InitOnce(OnceType* once, void (*initializer)());
 
+#ifndef CACHE_LINE_SIZE
 #define CACHE_LINE_SIZE 64U
+#endif
 
-#ifdef min
-#undef min
+#ifdef ROCKSDB_JEMALLOC
+#include "jemalloc/jemalloc.h"
+// Separate inlines so they can be replaced if needed
+inline void* jemalloc_aligned_alloc( size_t size, size_t alignment) {
+  return je_aligned_alloc(alignment, size);
+}
+inline void jemalloc_aligned_free(void* p) {
+  je_free(p);
+}
 #endif
-#ifdef max
-#undef max
+
+inline void *cacheline_aligned_alloc(size_t size) {
+#ifdef ROCKSDB_JEMALLOC
+  return jemalloc_aligned_alloc(size, CACHE_LINE_SIZE);
+#else
+  return _aligned_malloc(size, CACHE_LINE_SIZE);
 #endif
+}
+
+inline void cacheline_aligned_free(void *memblock) {
+#ifdef ROCKSDB_JEMALLOC
+  jemalloc_aligned_free(memblock);
+#else
+  _aligned_free(memblock);
+#endif
+}
+
+// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=52991 for MINGW32
+// could not be worked around with by -mno-ms-bitfields
+#ifndef __MINGW32__
+#define ALIGN_AS(n) __declspec(align(n))
+#else
+#define ALIGN_AS(n)
+#endif
+
+static inline void AsmVolatilePause() {
+#if defined(_M_IX86) || defined(_M_X64)
+  YieldProcessor();
+#endif
+  // it would be nice to get "wfe" on ARM here
+}
+
+extern int PhysicalCoreID();
 
 // For Thread Local Storage abstraction
 typedef DWORD pthread_key_t;
@@ -280,4 +347,4 @@ using port::truncate;
 
 }  // namespace rocksdb
 
-#endif  // STORAGE_LEVELDB_PORT_PORT_POSIX_H_
+#endif  // STORAGE_LEVELDB_PORT_PORT_WIN_H_

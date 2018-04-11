@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <initializer_list>
 
 namespace CryptoNote {
 namespace parameters {
@@ -27,27 +28,20 @@ namespace parameters {
 const uint32_t CRYPTONOTE_MAX_BLOCK_NUMBER                   = 500000000;
 const size_t   CRYPTONOTE_MAX_BLOCK_BLOB_SIZE                = 500000000;
 const size_t   CRYPTONOTE_MAX_TX_SIZE                        = 1000000000;
-const uint64_t CRYPTONOTE_PUBLIC_ADDRESS_BASE58_PREFIX       = 70;
-const uint32_t CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW          = 14;
+const size_t   CRYPTONOTE_MAX_SAFE_TX_SIZE                   = 115000;
+const uint64_t CRYPTONOTE_PUBLIC_ADDRESS_BASE58_PREFIX       = 3781284; //TRTL=0x3bbb1d=3914525 Uai=0x7324=29476 Uaic=0x39b2a4=3781284
+const uint32_t CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW          = 40;
 const uint64_t CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT            = 60 * 60 * 2;
 
 const size_t   BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW             = 60;
 
 // MONEY_SUPPLY - total number coins to be generated
-const uint64_t MONEY_SUPPLY                                  = 12500000000000000000u;
-const size_t MIN_MIXIN                          = 0;
-const uint8_t MANDATORY_MIXIN_BLOCK_VERSION     = 0;
-const uint32_t MIXIN_START_HEIGHT                          = 0;
-const uint32_t MANDATORY_TRANSACTION                          = 0;
-const uint32_t KILL_HEIGHT                          = 0;
-const uint64_t TAIL_EMISSION_REWARD                          = 0;
-const size_t CRYPTONOTE_COIN_VERSION                          = 0;
-const uint32_t ZAWY_DIFFICULTY_BLOCK_INDEX                 = 0;
-const size_t ZAWY_DIFFICULTY_V2                          = 0;
-const uint8_t ZAWY_DIFFICULTY_DIFFICULTY_BLOCK_VERSION   = 0;
-const uint32_t BUGGED_ZAWY_DIFFICULTY_BLOCK_INDEX                 = 0;
-const unsigned EMISSION_SPEED_FACTOR                         = 19;
-const uint64_t GENESIS_BLOCK_REWARD                          = 0;
+const uint64_t MONEY_SUPPLY                                  = UINT64_C(100000000000000);
+const uint32_t ZAWY_DIFFICULTY_BLOCK_INDEX                   = 187000;
+const size_t ZAWY_DIFFICULTY_V2                              = 0;
+const uint8_t ZAWY_DIFFICULTY_DIFFICULTY_BLOCK_VERSION       = 3;
+const unsigned EMISSION_SPEED_FACTOR                         = 25;
+const uint64_t GENESIS_BLOCK_REWARD                          = UINT64_C(0);
 static_assert(EMISSION_SPEED_FACTOR <= 8 * sizeof(uint64_t), "Bad EMISSION_SPEED_FACTOR");
 
 const size_t   CRYPTONOTE_REWARD_BLOCKS_WINDOW               = 100;
@@ -56,24 +50,23 @@ const size_t   CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V2  = 20000;
 const size_t   CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V1  = 10000;
 const size_t   CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_CURRENT = CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE;
 const size_t   CRYPTONOTE_COINBASE_BLOB_RESERVED_SIZE        = 600;
-const size_t   CRYPTONOTE_DISPLAY_DECIMAL_POINT              = 12;
-const uint64_t MINIMUM_FEE                                   = UINT64_C(1000000);    // pow(10, 6)
-const uint64_t DEFAULT_DUST_THRESHOLD                        = UINT64_C(1000000);    // pow(10, 6)
-// Use 0 for default max transaction size limit
-const uint64_t MAX_TRANSACTION_SIZE_LIMIT                          = CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE * 125 / 100 - CRYPTONOTE_COINBASE_BLOB_RESERVED_SIZE;
-const uint64_t DEFAULT_FEE                          = MINIMUM_FEE;
+const size_t   CRYPTONOTE_DISPLAY_DECIMAL_POINT              = 2;
+const uint64_t MINIMUM_FEE                                   = UINT64_C(10);
+const uint16_t DEFAULT_MIXIN                                 = 5;
+const uint16_t MINIMUM_MIXIN                                 = 3;
+const uint64_t DEFAULT_DUST_THRESHOLD                        = UINT64_C(10);
 
-const uint64_t DIFFICULTY_TARGET                             = 90; // seconds
+const uint64_t DIFFICULTY_TARGET                             = 30; // seconds
 const uint64_t EXPECTED_NUMBER_OF_BLOCKS_PER_DAY             = 24 * 60 * 60 / DIFFICULTY_TARGET;
-const size_t   DIFFICULTY_WINDOW                             = EXPECTED_NUMBER_OF_BLOCKS_PER_DAY; // blocks
-const size_t   DIFFICULTY_WINDOW_V1                          = DIFFICULTY_WINDOW;
-const size_t   DIFFICULTY_WINDOW_V2                          = DIFFICULTY_WINDOW;
-const size_t   DIFFICULTY_CUT                                = 60;  // timestamps to cut after sorting
-const size_t   DIFFICULTY_CUT_V1                             = DIFFICULTY_CUT;
-const size_t   DIFFICULTY_CUT_V2                             = DIFFICULTY_CUT;
-const size_t   DIFFICULTY_LAG                                = 15;  // !!!
-const size_t   DIFFICULTY_LAG_V1                             = DIFFICULTY_LAG;
-const size_t   DIFFICULTY_LAG_V2                             = DIFFICULTY_LAG;
+const size_t   DIFFICULTY_WINDOW                             = 17;
+const size_t   DIFFICULTY_WINDOW_V1                          = 2880;
+const size_t   DIFFICULTY_WINDOW_V2                          = 2880;
+const size_t   DIFFICULTY_CUT                                = 0;  // timestamps to cut after sorting
+const size_t   DIFFICULTY_CUT_V1                             = 60;
+const size_t   DIFFICULTY_CUT_V2                             = 60;
+const size_t   DIFFICULTY_LAG                                = 0;  // !!!
+const size_t   DIFFICULTY_LAG_V1                             = 15;
+const size_t   DIFFICULTY_LAG_V2                             = 15;
 static_assert(2 * DIFFICULTY_CUT <= DIFFICULTY_WINDOW - 2, "Bad DIFFICULTY_WINDOW or DIFFICULTY_CUT");
 
 const size_t   MAX_BLOCK_SIZE_INITIAL                        = 100000;
@@ -92,8 +85,9 @@ const size_t   FUSION_TX_MIN_INPUT_COUNT                     = 12;
 const size_t   FUSION_TX_MIN_IN_OUT_COUNT_RATIO              = 4;
 
 const uint32_t KEY_IMAGE_CHECKING_BLOCK_INDEX                = 0;
-const uint32_t UPGRADE_HEIGHT_V2                                = 1;
-const uint32_t UPGRADE_HEIGHT_V3                                = 2;
+const uint32_t UPGRADE_HEIGHT_V2                             = 1;
+const uint32_t UPGRADE_HEIGHT_V3                             = 2;
+const uint32_t UPGRADE_HEIGHT_V4                             = 350000; // Upgrade height for CN-Lite Variant 1 switch.
 const unsigned UPGRADE_VOTING_THRESHOLD                      = 90;               // percent
 const uint32_t UPGRADE_VOTING_WINDOW                         = EXPECTED_NUMBER_OF_BLOCKS_PER_DAY;  // blocks
 const uint32_t UPGRADE_WINDOW                                = EXPECTED_NUMBER_OF_BLOCKS_PER_DAY;  // blocks
@@ -105,10 +99,9 @@ const char     CRYPTONOTE_BLOCKINDEXES_FILENAME[]            = "blockindexes.bin
 const char     CRYPTONOTE_POOLDATA_FILENAME[]                = "poolstate.bin";
 const char     P2P_NET_DATA_FILENAME[]                       = "p2pstate.bin";
 const char     MINER_CONFIG_FILE_NAME[]                      = "miner_conf.json";
-const char     GENESIS_COINBASE_TX_HEX[]                     = "010e01ff00018cebe2ebf1b505029b2e4c0281c0b02e7c53291a94d1d0cbff8883f8024f5142ee494ffbbd0880712101b8516d5a31849f30ddc38af0daea0e4a401e142e559c88da3d06e7b25631ba9d";
 } // parameters
 
-const char     CRYPTONOTE_NAME[]                             = "bitcoal";
+const char     CRYPTONOTE_NAME[]                             = "UaiCoin";
 
 const uint8_t  TRANSACTION_VERSION_1                         =  1;
 const uint8_t  TRANSACTION_VERSION_2                         =  2;
@@ -116,6 +109,7 @@ const uint8_t  CURRENT_TRANSACTION_VERSION                   =  TRANSACTION_VERS
 const uint8_t  BLOCK_MAJOR_VERSION_1                         =  1;
 const uint8_t  BLOCK_MAJOR_VERSION_2                         =  2;
 const uint8_t  BLOCK_MAJOR_VERSION_3                         =  3;
+const uint8_t  BLOCK_MAJOR_VERSION_4                         =  4;
 const uint8_t  BLOCK_MINOR_VERSION_0                         =  0;
 const uint8_t  BLOCK_MINOR_VERSION_1                         =  1;
 
@@ -123,8 +117,8 @@ const size_t   BLOCKS_IDS_SYNCHRONIZING_DEFAULT_COUNT        =  10000;  //by def
 const size_t   BLOCKS_SYNCHRONIZING_DEFAULT_COUNT            =  100;    //by default, blocks count in blocks downloading
 const size_t   COMMAND_RPC_GET_BLOCKS_FAST_MAX_COUNT         =  1000;
 
-const int      P2P_DEFAULT_PORT                              =  7700;
-const int      RPC_DEFAULT_PORT                              =  7701;
+const int      P2P_DEFAULT_PORT                              =  21897;
+const int      RPC_DEFAULT_PORT                              =  21898;
 
 const size_t   P2P_LOCAL_WHITE_PEERLIST_LIMIT                =  1000;
 const size_t   P2P_LOCAL_GRAY_PEERLIST_LIMIT                 =  5000;
@@ -142,25 +136,15 @@ const size_t   P2P_DEFAULT_HANDSHAKE_INVOKE_TIMEOUT          = 5000;          //
 const char     P2P_STAT_TRUSTED_PUB_KEY[]                    = "";
 
 const char* const SEED_NODES[] = {
-  "108.61.188.93:7700", 
-  "136.243.69.10:7700",
-  "192.121.166.182:7700",
-  "156.208.16.35:29130",
-  "46.98.32.134:29130"
+  "18.232.33.114:21897",
+  "18.234.17.54:21897"
 };
-
 
 struct CheckpointData {
   uint32_t index;
   const char* blockId;
 };
 
-const std::initializer_list<CheckpointData> CHECKPOINTS = {
-  {55000,  "84190dfb00457f90be17eb9d9f35ae509423d10c9efaa3e9fdc3c12062cb2c2a"},
-  {233000, "95f4090b845df3c680454aa69f0565e9d70be24ffa1720def740159f0244a97b"},
-};
+const std::initializer_list<CheckpointData> CHECKPOINTS = {  };
+
 } // CryptoNote
-
-#define ALLOW_DEBUG_COMMANDS
-
-

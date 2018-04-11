@@ -1,7 +1,7 @@
-// Copyright (c) 2014, Facebook, Inc.  All rights reserved.
-// This source code is licensed under the BSD-style license found in the
-// LICENSE file in the root directory of this source tree. An additional grant
-// of patent rights can be found in the PATENTS file in the same directory.
+// Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 package org.rocksdb;
 
 /**
@@ -15,12 +15,14 @@ public class BlockBasedTableConfig extends TableFormatConfig {
     noBlockCache_ = false;
     blockCacheSize_ = 8 * 1024 * 1024;
     blockCacheNumShardBits_ = 0;
+    blockCache_ = null;
     blockSize_ = 4 * 1024;
     blockSizeDeviation_ = 10;
     blockRestartInterval_ = 16;
     wholeKeyFiltering_ = true;
     filter_ = null;
     cacheIndexAndFilterBlocks_ = false;
+    pinL0FilterAndIndexBlocksInCache_ = false;
     hashIndexAllowCollision_ = true;
     blockCacheCompressedSize_ = 0;
     blockCacheCompressedNumShardBits_ = 0;
@@ -68,6 +70,24 @@ public class BlockBasedTableConfig extends TableFormatConfig {
    */
   public long blockCacheSize() {
     return blockCacheSize_;
+  }
+
+  /**
+   * Use the specified cache for blocks.
+   * When not null this take precedence even if the user sets a block cache size.
+   *
+   * {@link org.rocksdb.Cache} should not be disposed before options instances
+   * using this cache is disposed.
+   *
+   * {@link org.rocksdb.Cache} instance can be re-used in multiple options
+   * instances.
+   *
+   * @param cache {@link org.rocksdb.Cache} Cache java instance (e.g. LRUCache).
+   * @return the reference to the current config.
+   */
+  public BlockBasedTableConfig setBlockCache(final Cache cache) {
+    blockCache_ = cache;
+    return this;
   }
 
   /**
@@ -223,6 +243,29 @@ public class BlockBasedTableConfig extends TableFormatConfig {
   public BlockBasedTableConfig setCacheIndexAndFilterBlocks(
       final boolean cacheIndexAndFilterBlocks) {
     cacheIndexAndFilterBlocks_ = cacheIndexAndFilterBlocks;
+    return this;
+  }
+
+  /**
+   * Indicating if we'd like to pin L0 index/filter blocks to the block cache.
+     If not specified, defaults to false.
+   *
+   * @return if L0 index and filter blocks should be pinned to the block cache.
+   */
+  public boolean pinL0FilterAndIndexBlocksInCache() {
+    return pinL0FilterAndIndexBlocksInCache_;
+  }
+
+  /**
+   * Indicating if we'd like to pin L0 index/filter blocks to the block cache.
+     If not specified, defaults to false.
+   *
+   * @param pinL0FilterAndIndexBlocksInCache pin blocks in block cache
+   * @return the reference to the current config.
+   */
+  public BlockBasedTableConfig setPinL0FilterAndIndexBlocksInCache(
+      final boolean pinL0FilterAndIndexBlocksInCache) {
+    pinL0FilterAndIndexBlocksInCache_ = pinL0FilterAndIndexBlocksInCache;
     return this;
   }
 
@@ -389,25 +432,28 @@ public class BlockBasedTableConfig extends TableFormatConfig {
       filterHandle = filter_.nativeHandle_;
     }
 
-    return newTableFactoryHandle(noBlockCache_, blockCacheSize_,
-        blockCacheNumShardBits_, blockSize_, blockSizeDeviation_,
-        blockRestartInterval_, wholeKeyFiltering_,
-        filterHandle, cacheIndexAndFilterBlocks_,
-        hashIndexAllowCollision_, blockCacheCompressedSize_,
-        blockCacheCompressedNumShardBits_,
-        checksumType_.getValue(), indexType_.getValue(),
+    long blockCacheHandle = 0;
+    if (blockCache_ != null) {
+      blockCacheHandle = blockCache_.nativeHandle_;
+    }
+
+    return newTableFactoryHandle(noBlockCache_, blockCacheSize_, blockCacheNumShardBits_,
+        blockCacheHandle, blockSize_, blockSizeDeviation_, blockRestartInterval_,
+        wholeKeyFiltering_, filterHandle, cacheIndexAndFilterBlocks_,
+        pinL0FilterAndIndexBlocksInCache_, hashIndexAllowCollision_, blockCacheCompressedSize_,
+        blockCacheCompressedNumShardBits_, checksumType_.getValue(), indexType_.getValue(),
         formatVersion_);
   }
 
-  private native long newTableFactoryHandle(
-      boolean noBlockCache, long blockCacheSize, int blockCacheNumShardBits,
-      long blockSize, int blockSizeDeviation, int blockRestartInterval,
-      boolean wholeKeyFiltering, long filterPolicyHandle,
-      boolean cacheIndexAndFilterBlocks, boolean hashIndexAllowCollision,
-      long blockCacheCompressedSize, int blockCacheCompressedNumShardBits,
-      byte checkSumType, byte indexType, int formatVersion);
+  private native long newTableFactoryHandle(boolean noBlockCache, long blockCacheSize,
+      int blockCacheNumShardBits, long blockCacheHandle, long blockSize, int blockSizeDeviation,
+      int blockRestartInterval, boolean wholeKeyFiltering, long filterPolicyHandle,
+      boolean cacheIndexAndFilterBlocks, boolean pinL0FilterAndIndexBlocksInCache,
+      boolean hashIndexAllowCollision, long blockCacheCompressedSize,
+      int blockCacheCompressedNumShardBits, byte checkSumType, byte indexType, int formatVersion);
 
   private boolean cacheIndexAndFilterBlocks_;
+  private boolean pinL0FilterAndIndexBlocksInCache_;
   private IndexType indexType_;
   private boolean hashIndexAllowCollision_;
   private ChecksumType checksumType_;
@@ -415,6 +461,7 @@ public class BlockBasedTableConfig extends TableFormatConfig {
   private long blockSize_;
   private long blockCacheSize_;
   private int blockCacheNumShardBits_;
+  private Cache blockCache_;
   private long blockCacheCompressedSize_;
   private int blockCacheCompressedNumShardBits_;
   private int blockSizeDeviation_;

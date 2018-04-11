@@ -144,8 +144,6 @@ namespace CryptoNote
     size_t get_outgoing_connections_count();
 
     CryptoNote::PeerlistManager& getPeerlistManager() { return m_peerlist; }
-    std::vector<NetworkAddress> get_seed_nodes(){return m_seed_nodes;}
-    boost::uuids::uuid get_network_id(){return m_network_id;}
 
   private:
 
@@ -159,12 +157,12 @@ namespace CryptoNote
     int handle_get_stat_info(int command, COMMAND_REQUEST_STAT_INFO::request& arg, COMMAND_REQUEST_STAT_INFO::response& rsp, P2pConnectionContext& context);
     int handle_get_network_state(int command, COMMAND_REQUEST_NETWORK_STATE::request& arg, COMMAND_REQUEST_NETWORK_STATE::response& rsp, P2pConnectionContext& context);
     int handle_get_peer_id(int command, COMMAND_REQUEST_PEER_ID::request& arg, COMMAND_REQUEST_PEER_ID::response& rsp, P2pConnectionContext& context);
+    bool check_trust(const proof_of_trust& tr);
 #endif
 
     bool init_config();
     bool make_default_config();
     bool store_config();
-    bool check_trust(const proof_of_trust& tr);
     void initUpnp();
 
     bool handshake(CryptoNote::LevinProtocol& proto, P2pConnectionContext& context, bool just_take_peerlist = false);
@@ -274,6 +272,5 @@ namespace CryptoNote
     std::list<PeerlistEntry> m_command_line_peers;
     uint64_t m_peer_livetime;
     boost::uuids::uuid m_network_id;
-    std::string m_p2pStatTrustedPubKey;
   };
 }

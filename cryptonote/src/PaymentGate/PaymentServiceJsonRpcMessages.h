@@ -78,6 +78,20 @@ struct GetViewKey {
   };
 };
 
+struct GetMnemonicSeed {
+  struct Request {
+    std::string address;
+
+    void serialize(CryptoNote::ISerializer& serializer);
+  };
+
+  struct Response {
+    std::string mnemonicSeed;
+
+    void serialize(CryptoNote::ISerializer& serializer);
+  };
+};
+
 struct GetStatus {
   struct Request {
     void serialize(CryptoNote::ISerializer& serializer);
@@ -374,40 +388,6 @@ struct SendDelayedTransaction {
   };
 
   struct Response {
-    void serialize(CryptoNote::ISerializer& serializer);
-  };
-};
-
-struct TransactionOutputInformationSerialized {
-  // output info
-  uint8_t type;
-  uint64_t amount;
-  uint32_t globalOutputIndex;
-  uint32_t outputInTransaction;
-
-  // transaction info
-  std::string transactionHash;
-  std::string transactionPublicKey;
-  std::string outputKey;         // Type: Key 
-
-  void serialize(CryptoNote::ISerializer& serializer);
-};
-
-struct GetUnspendOuts {
-  struct Request {
-    std::string address;
-    std::string viewKey;
-    uint64_t amount;
-    uint32_t mixIn;
-    bool useDust;
-    uint64_t dustThreshold;
-
-    void serialize(CryptoNote::ISerializer& serializer);
-  };
-
-  struct Response {
-    std::vector<TransactionOutputInformationSerialized> outputs;
-
     void serialize(CryptoNote::ISerializer& serializer);
   };
 };
